@@ -18,8 +18,8 @@
 > a mechanism (`scripts/migrate.sh`, see [Updating](#updating)) and a test, but have never been run against
 > anything but a throwaway cluster.
 >
-> It also deliberately deviates from upstream Supabase in three places, one of which trades away in-cluster
-> TLS. Read [Things that will bite you](#things-that-will-bite-you) before deploying it anywhere, and the
+> It also deliberately deviates from upstream Supabase in two places. Read
+> [Things that will bite you](#things-that-will-bite-you) before deploying it anywhere, and the
 > [Caveats](#caveats) before storing anything in it.
 >
 > This is published under the Apache License 2.0. Sections 7 and 8 — no warranty, no liability — are not
@@ -98,10 +98,28 @@ you intend to hand out database access, understand what you are giving up.
 
 ### The chart hardcodes `DB_SSL: disable`
 
-Spilo's `pg_hba` is `hostnossl all all all reject`, so every service is rejected at connect time. The chart's
-auth/rest/storage/meta templates hardcode `DB_SSL: disable` with no values hook. The example works around it on the
-database side by relaxing `pg_hba` for the pod network — **which trades away in-cluster TLS**. The better fix is a
-values-driven sslmode in the chart. Note also that `realtime` reads `DB_SSL` as a *boolean*, not an sslmode.
+Spilo's `pg_hba` is `hostnossl all all all reject` — TLS is mandatory off-localhost. The chart's auth/rest/storage/meta
+templates hardcode `DB_SSL: "disable"` with no values hook, so those four are rejected at connect time. Setting it
+through `environment.<svc>` does not help either: that appends a *second* `DB_SSL` entry, and server-side apply rejects
+the duplicate.
+
+The fix is to patch the four Deployments after rendering — `examples/helmrelease-supabase.yaml` shows it as Flux
+`postRenderers`. The env list merges on `name`, so a strategic-merge patch replaces the existing entry in place and
+keeps its index, which matters because the DSN below it interpolates `$(DB_SSL)`.
+
+**Do not relax Spilo's `pg_hba` instead.** It works, and it silently gives up in-cluster TLS for the whole database.
+
+The value differs per service, and the reason is worth knowing:
+
+| service | value | why |
+| --- | --- | --- |
+| auth, rest, meta | `require` | libpq semantics: encrypt, do not verify |
+| storage | `no-verify` | storage-api is Node, and node-postgres verifies the certificate even at `require` — so `require` fails against Spilo's self-signed cert with `DEPTH_ZERO_SELF_SIGNED_CERT`. `no-verify` is its equivalent of libpq's `require`. |
+| realtime | `true` | reads `DB_SSL` as a **boolean**, not an sslmode — and is settable in values, since its value is not hardcoded in the template |
+
+None of these verify the server certificate: Spilo's is self-signed with no CA to trust, so traffic is encrypted but
+the server is not authenticated. Verified on a live cluster — every client connection shows `ssl=t`, `TLSv1.3` in
+`pg_stat_ssl`, with Spilo's `pg_hba` untouched.
 
 ### `environment.<svc>` replaces, it does not merge
 

@@ -11,8 +11,9 @@
 #  * environment.<svc> REPLACES the chart's default env list, it does not merge.
 #    Every default has to be repeated or the service loses vars it needs.
 #  * DB_SSL is hardcoded to "disable" in the auth/rest/storage/meta templates
-#    with no values hook, so Spilo's mandatory-TLS pg_hba has to be relaxed on
-#    the database side instead (see postgresql-supabase-db.yaml).
+#    with no values hook. Do NOT relax Spilo's pg_hba to work around that --
+#    patch the four Deployments after rendering instead, as
+#    helmrelease-supabase.yaml shows.
 secret:
   jwt:
     secretRef: supabase-secrets
@@ -115,9 +116,12 @@ environment:
   - name: DB_USER
     value: supabase_admin
   # Realtime parses DB_SSL as a BOOLEAN (Realtime.Env.get_boolean), unlike
-  # auth/rest/storage/meta where the chart feeds it into sslmode=.
+  # auth/rest/storage/meta where the chart feeds it into sslmode=. This one is
+  # settable here because realtime's DB_SSL comes from these values rather than
+  # being hardcoded in the template; the other four need the post-render patch
+  # in helmrelease-supabase.yaml.
   - name: DB_SSL
-    value: "false"
+    value: "true"
   - name: PORT
     value: "4000"
   - name: FLY_ALLOC_ID

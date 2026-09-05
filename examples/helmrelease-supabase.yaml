@@ -1,0 +1,109 @@
+# Flux HelmRelease for the Supabase chart, with the post-render patches that
+# let it talk TLS to Spilo.
+#
+# THE PROBLEM. Spilo's pg_hba is "hostnossl all all all reject" -- TLS is
+# mandatory off-localhost. The chart hardcodes DB_SSL: "disable" in its
+# auth/rest/storage/meta Deployment templates with no values hook, so every one
+# of those services is rejected at connect time. Adding DB_SSL through
+# environment.<svc> does not work either: it produces a duplicate env entry,
+# which server-side apply rejects outright.
+#
+# THE FIX. Patch the four Deployments after Helm renders them. The env list has
+# a merge key of `name`, so a strategic-merge patch REPLACES the existing
+# DB_SSL entry rather than appending a second one, and leaves it at its original
+# index -- which matters, because the DSN below it interpolates $(DB_SSL) and
+# Kubernetes resolves that against earlier entries in the list.
+#
+# Do NOT instead relax Spilo's pg_hba. That works, and it silently gives up
+# in-cluster TLS for the whole database.
+#
+# WHY THE VALUES DIFFER PER SERVICE:
+#   auth, rest, meta   sslmode=require -- libpq semantics: encrypt, do not verify.
+#   storage            sslmode=no-verify -- storage-api is Node, and
+#                      node-postgres verifies the certificate even at
+#                      `require`, so `require` fails against Spilo's
+#                      self-signed cert with DEPTH_ZERO_SELF_SIGNED_CERT.
+#                      `no-verify` is node-postgres' equivalent of libpq's
+#                      `require`.
+#   realtime           set in values, not here: it parses DB_SSL as a BOOLEAN
+#                      and its value is not hardcoded in the template.
+#
+# None of these verify the server certificate, because Spilo's is self-signed
+# with no CA to trust. Traffic is encrypted; the server is not authenticated.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: supabase
+  namespace: supabase
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: supabase
+      version: 0.7.x
+      sourceRef:
+        kind: HelmRepository
+        name: supabase
+        namespace: flux-system
+  valuesFrom:
+  - kind: Secret
+    name: supabase-values
+  postRenderers:
+  - kustomize:
+      patches:
+      - patch: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: supabase-supabase-auth
+            namespace: supabase
+          spec:
+            template:
+              spec:
+                containers:
+                - name: supabase-auth
+                  env:
+                  - name: DB_SSL
+                    value: require
+      - patch: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: supabase-supabase-rest
+            namespace: supabase
+          spec:
+            template:
+              spec:
+                containers:
+                - name: supabase-rest
+                  env:
+                  - name: DB_SSL
+                    value: require
+      - patch: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: supabase-supabase-meta
+            namespace: supabase
+          spec:
+            template:
+              spec:
+                containers:
+                - name: supabase-meta
+                  env:
+                  - name: DB_SSL
+                    value: require
+      - patch: |
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: supabase-supabase-storage
+            namespace: supabase
+          spec:
+            template:
+              spec:
+                containers:
+                - name: supabase-storage
+                  env:
+                  - name: DB_SSL
+                    value: no-verify
