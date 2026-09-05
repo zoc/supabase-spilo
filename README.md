@@ -187,6 +187,16 @@ rollback, and statements like `CREATE DATABASE` cannot be transactional anyway.
 It also refuses to run against a replica, takes an advisory lock so two Jobs cannot race, and warns when a
 file recorded as applied has changed upstream or vanished from the image.
 
+> [!TIP]
+> Roll onto an **immutable** reference, not `:18`. The floating tags are mutable, and Kubernetes defaults to
+> `imagePullPolicy: IfNotPresent` for a tag it already has — so a node that has cached `:18` keeps running the
+> old image while you believe you have upgraded, and `migrate.sh` then finds nothing to do because the new
+> migrations never arrived on disk. Use `18-<spilo>-<supabase-ref>`, or pin the digest outright:
+>
+> ```yaml
+> dockerImage: docker.io/fzoc/supabase-spilo@sha256:<digest>
+> ```
+
 **Adopting an existing database.** A cluster bootstrapped before this mechanism existed has no tracking table.
 `migrate.sh` refuses to guess and tells you to re-run with `--baseline`, which records the image's files as
 applied without executing them. That is only correct if the database was bootstrapped from the *same* image

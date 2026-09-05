@@ -22,7 +22,10 @@ spec:
       containers:
       - name: migrate
         # MUST match the image the cluster now runs -- that is where the
-        # migrations come from.
+        # migrations come from. Prefer an immutable reference: the floating
+        # tags are mutable, and a node that has cached :18 will keep running
+        # the old image (imagePullPolicy defaults to IfNotPresent), so the new
+        # migrations never reach disk and this Job finds nothing to do.
         image: docker.io/fzoc/supabase-spilo:18
         command: ["/scripts/migrate.sh"]
         # Add --dry-run first if you want to see the delta before applying it.
