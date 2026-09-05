@@ -56,15 +56,21 @@ if [ "$(psql -d "$CONN" -XtAc "SELECT count(*) FROM pg_namespace WHERE nspname='
     log "auth schema already present, skipping"; exit 0
 fi
 
+# Order matters: these are dbmate migrations, applied in filename order.
+# Sorted explicitly under LC_ALL=C rather than left to glob expansion, which is
+# locale-collated -- Spilo runs with LC_ALL=en_US.utf-8, where punctuation has
+# variable collation weight. Today every upstream migration carries a
+# fixed-width 14-digit timestamp so the two orders agree, but that is an
+# implicit dependency on upstream's naming, and byte order costs nothing.
 run_phase() {
-    local dir="$1" label="$2"
+    local dir="$1" label="$2" f
     [ -d "$ROOT/$dir" ] || { log "no $dir, skipping $label"; return 0; }
     log "--- $label ---"
-    for f in "$ROOT/$dir"/*.sql; do
-        [ -e "$f" ] || continue
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
         log "  $(basename "$f")"
         psql -d "$CONN" -X -v ON_ERROR_STOP=1 -q -f "$f"
-    done
+    done < <(find "$ROOT/$dir" -maxdepth 1 -name '*.sql' -type f | LC_ALL=C sort)
 }
 
 run_phase 00-pre-init     "phase 1: roles Spilo does not create"

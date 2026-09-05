@@ -171,6 +171,29 @@ The smoke test starts a throwaway Postgres inside the image and asserts the prel
 creates, `pg_net` completes a real HTTP request, and `authenticator` can still connect with
 `session_preload_libraries = supautils, safeupdate` — the setting that makes PostgREST fail outright on a stock Spilo.
 
+```bash
+./scripts/bootstrap-test.sh supabase-spilo:local
+```
+
+The bootstrap test then runs `supabase_post_init.sh` for real — same arguments Patroni passes, same mounted-secret
+directory, every phase — and asserts what came out: each service role exists and has a password, the schemas and
+`auth.users` are there, `_supabase` was created, `authenticator` carries the `supautils` preload, `anon` cannot read
+`pg_stat_statements`, and every vendored `.sql` file actually executed.
+
+That last count is the one that matters when upstream adds a migration: it fails if a file is vendored but never
+run. Both run in CI, on both architectures.
+
+## Does it pick up new upstream migrations?
+
+Yes, for a **new** cluster — `sync-upstream.sh` lists the migration directory from the API rather than hardcoding
+names, so a new file is vendored automatically, and `run_phase` executes everything it finds. Ordering is by
+`LC_ALL=C sort` rather than glob expansion, so it does not depend on the container's locale; new timestamped
+migrations land after the existing ones and before the `zz-` prefixed self-host extras, which is the order the
+upstream compose applies them in.
+
+For an **existing** cluster, no — see the warning under [Updating](#updating). The bootstrap only ever runs at
+initdb.
+
 ## About pg_net
 
 `pg_net >= 0.20` calls `curl_easy_header()`, added in libcurl 7.83. Spilo is built on Ubuntu jammy, which ships
