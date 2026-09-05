@@ -1,0 +1,188 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  # The image statically links its own libcurl, so it does not pick up distro
+  # curl security updates on its own. Rebuild weekly to refresh it and the
+  # Spilo base layer.
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+env:
+  IMAGE: fzoc/supabase-spilo
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Renovate can bump the refs in upstream.env, but it cannot know what SQL
+  # those refs imply. This re-runs the sync and fails if the vendored tree
+  # disagrees, so a version bump can never land without the migrations it
+  # actually pulls in -- which is the diff worth reviewing.
+  vendored-sql:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Vendored SQL matches upstream.env
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./scripts/sync-upstream.sh --check
+
+  shellcheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: shellcheck scripts/*.sh
+
+  build:
+    needs: [vendored-sql, shellcheck]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners rather than QEMU: this build compiles curl and
+          # pg_net from source, and emulated that turns minutes into tens of
+          # minutes. arm64 hosted runners are free for public repositories.
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Build once, load locally, and prove it works before it is allowed near
+      # the registry.
+      - name: Build (${{ matrix.arch }})
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: supabase-spilo:ci
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+          provenance: false
+
+      - name: Smoke test (${{ matrix.arch }})
+        run: ./scripts/smoke-test.sh supabase-spilo:ci
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Push by digest only; the merge job below assembles the tags. Pushing
+      # tags from both matrix legs would have them race and clobber each other.
+      - name: Push by digest (${{ matrix.arch }})
+        id: push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=docker.io/${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          provenance: false
+
+      # Digests travel to the merge job as artifacts, not job outputs: every
+      # leg of a matrix writes into the same `outputs` map and the last to
+      # finish overwrites the rest, so one of the two would always be empty.
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/digests
+          # Digest goes in the file contents, not the name: upload-artifact
+          # rejects ':' in paths, and a digest is "sha256:...".
+          echo "${{ steps.push.outputs.digest }}" > "/tmp/digests/${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+          if-no-files-found: error
+
+  merge:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # The tag set is derived from what actually determines the image:
+      # the Postgres major, the Spilo base, and the Supabase ref it vendors.
+      - name: Derive tags
+        id: meta
+        run: |
+          set -euo pipefail
+          . ./upstream.env
+          PGVERSION=$(sed -n 's/^ARG PGVERSION=\(.*\)$/\1/p' Dockerfile | head -1)
+          SPILO=$(sed -n 's/^ARG SPILO_VERSION=\(.*\)$/\1/p' Dockerfile | head -1)
+          TAGS="${IMAGE}:${PGVERSION}-${SPILO}-${SUPABASE_POSTGRES_REF}"
+          TAGS="${TAGS},${IMAGE}:${PGVERSION}-${SPILO}"
+          TAGS="${TAGS},${IMAGE}:${PGVERSION}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAGS="${TAGS},${IMAGE}:${GITHUB_REF_NAME}"
+          fi
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "Tags: ${TAGS}"
+
+      - name: Create manifest list
+        run: |
+          set -euo pipefail
+          [ "$(ls /tmp/digests | wc -l)" -eq 2 ] || { echo "expected 2 digests, got:"; ls /tmp/digests; exit 1; }
+          SRCS=""
+          for f in /tmp/digests/*; do
+            SRCS="$SRCS docker.io/${IMAGE}@$(cat "$f")"
+          done
+          ARGS=""
+          IFS=',' read -ra T <<< "${{ steps.meta.outputs.tags }}"
+          for t in "${T[@]}"; do ARGS="$ARGS -t $t"; done
+          # shellcheck disable=SC2086
+          docker buildx imagetools create $ARGS $SRCS
+
+      - name: Verify the manifest carries both architectures
+        run: |
+          set -euo pipefail
+          . ./upstream.env
+          PGVERSION=$(sed -n 's/^ARG PGVERSION=\(.*\)$/\1/p' Dockerfile | head -1)
+          SPILO=$(sed -n 's/^ARG SPILO_VERSION=\(.*\)$/\1/p' Dockerfile | head -1)
+          REF="${IMAGE}:${PGVERSION}-${SPILO}-${SUPABASE_POSTGRES_REF}"
+          docker buildx imagetools inspect "$REF" --raw | tee /tmp/manifest.json
+          for a in amd64 arm64; do
+            grep -q "\"architecture\":\"$a\"" /tmp/manifest.json \
+              || { echo "manifest is missing $a"; exit 1; }
+          done
+          echo "manifest carries amd64 and arm64"

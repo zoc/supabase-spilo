@@ -1,0 +1,4 @@
+{
+  // MD013 (line-length) is off: the README is flowing prose, not hard-wrapped.
+  "MD013": false
+}

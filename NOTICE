@@ -1,0 +1,27 @@
+supabase-spilo
+Copyright 2026 Franck Zoccolo
+
+This product includes software developed by third parties:
+
+  Zalando Spilo and postgres-operator
+  https://github.com/zalando/spilo  -- Apache License 2.0
+  The published image is built FROM ghcr.io/zalando/spilo-18.
+
+  Supabase Postgres
+  https://github.com/supabase/postgres  -- Apache License 2.0
+  The SQL under migrations/10-init-scripts and migrations/20-migrations is
+  vendored verbatim from this repository, at the ref pinned in upstream.env,
+  with one file excluded (10000000000000_demote-postgres.sql -- see README).
+
+  Supabase
+  https://github.com/supabase/supabase  -- Apache License 2.0
+  The self-host SQL (webhooks.sql, jwt.sql, roles.sql, realtime.sql,
+  _supabase.sql) is vendored from docker/volumes/db at the commit pinned in
+  upstream.env.
+
+  pg_net -- https://github.com/supabase/pg_net -- Apache License 2.0
+  Built from source and linked against a statically compiled libcurl
+  (https://curl.se, curl licence).
+
+  Extension packages are installed from the Pigsty APT repository
+  (https://pigsty.io); each carries its own upstream licence.

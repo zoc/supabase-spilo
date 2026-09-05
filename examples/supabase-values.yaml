@@ -1,0 +1,160 @@
+# Supabase (supabase-community/supabase-kubernetes chart) against an
+# external, Zalando-managed Postgres built from the supabase-spilo image.
+#
+# Expects a Secret named supabase-secrets in the same namespace carrying:
+#   jwtSecret anonKey serviceKey password database host port username
+# The same Secret is mounted into the database pod for the bootstrap.
+# The chart does not bootstrap an external database -- its own values file says
+# so -- which is what the custom Spilo image's post_init hook handles instead.
+#
+# Two chart behaviours to keep in mind:
+#  * environment.<svc> REPLACES the chart's default env list, it does not merge.
+#    Every default has to be repeated or the service loses vars it needs.
+#  * DB_SSL is hardcoded to "disable" in the auth/rest/storage/meta templates
+#    with no values hook, so Spilo's mandatory-TLS pg_hba has to be relaxed on
+#    the database side instead (see postgresql-supabase-db.yaml).
+secret:
+  jwt:
+    secretRef: supabase-secrets
+    secretRefKey:
+      anonKey: anonKey
+      serviceKey: serviceKey
+      secret: jwtSecret
+  db:
+    secretRef: supabase-secrets
+    secretRefKey:
+      host: host
+      port: port
+      password: password
+      database: database
+      username: username
+  realtime:
+    secretKeyBase: "u0yRuxRzrDanZOEzTEq1QLs8Ezxlz2MTBlMk8c8pDD3J9Uh6D2HWZTmRRexjca4x"
+    dbEncKey: "inbEyWtft8-0Ag8s"
+  dashboard:
+    username: supabase
+    password: "ijhVl7QUmOSB0Mw3"
+  analytics:
+    publicAccessToken: unused-analytics-disabled
+    privateAccessToken: unused-analytics-disabled
+
+deployment:
+  db:
+    enabled: false      # Zalando's supabase-db cluster instead
+  analytics:
+    enabled: false      # Logflare; upstream dropped it from self-host
+  vector:
+    enabled: false      # reads docker logs, meaningless in k8s
+  minio:
+    enabled: false      # storage uses the file backend for this trial
+  studio:   {enabled: true}
+  kong:     {enabled: true}
+  auth:     {enabled: true}
+  rest:     {enabled: true}
+  realtime: {enabled: true}
+  storage:  {enabled: true}
+  meta:     {enabled: true}
+  imgproxy: {enabled: true}
+  functions:{enabled: true}
+
+environment:
+  studio:
+  - name: HOSTNAME
+    value: "::"
+  - name: STUDIO_PORT
+    value: "3000"
+  - name: DEFAULT_ORGANIZATION_NAME
+    value: Local Trial
+  - name: DEFAULT_PROJECT_NAME
+    value: supabase-on-spilo
+  - name: SUPABASE_PUBLIC_URL
+    value: http://supabase.example.com
+  - name: NEXT_ANALYTICS_BACKEND_PROVIDER
+    value: postgres
+  auth:
+  # GOTRUE_API_HOST/PORT are chart defaults; without them GoTrue listens on
+  # :8081 while the Service targets 9999, and every request 502s at kong.
+  - name: GOTRUE_API_HOST
+    value: "0.0.0.0"
+  - name: GOTRUE_API_PORT
+    value: "9999"
+  - name: GOTRUE_JWT_EXP
+    value: "3600"
+  - name: API_EXTERNAL_URL
+    value: http://supabase.example.com
+  - name: GOTRUE_SITE_URL
+    value: http://supabase.example.com
+  - name: GOTRUE_URI_ALLOW_LIST
+    value: "*"
+  - name: GOTRUE_DISABLE_SIGNUP
+    value: "false"
+  - name: GOTRUE_JWT_ADMIN_ROLES
+    value: service_role
+  - name: GOTRUE_JWT_AUD
+    value: authenticated
+  - name: GOTRUE_JWT_DEFAULT_GROUP_NAME
+    value: authenticated
+  - name: GOTRUE_EXTERNAL_EMAIL_ENABLED
+    value: "true"
+  - name: GOTRUE_MAILER_AUTOCONFIRM
+    value: "true"
+  - name: GOTRUE_EXTERNAL_PHONE_ENABLED
+    value: "false"
+  - name: GOTRUE_SMS_AUTOCONFIRM
+    value: "true"
+  rest:
+  - name: PGRST_DB_SCHEMAS
+    value: public,storage,graphql_public
+  - name: PGRST_DB_ANON_ROLE
+    value: anon
+  - name: PGRST_DB_USE_LEGACY_GUCS
+    value: "false"
+  # Mirrors the chart's own defaults; the list replaces rather than merges,
+  # and dropping APP_NAME alone is enough to crash realtime at boot.
+  realtime:
+  - name: DB_USER
+    value: supabase_admin
+  # Realtime parses DB_SSL as a BOOLEAN (Realtime.Env.get_boolean), unlike
+  # auth/rest/storage/meta where the chart feeds it into sslmode=.
+  - name: DB_SSL
+    value: "false"
+  - name: PORT
+    value: "4000"
+  - name: FLY_ALLOC_ID
+    value: fly123
+  - name: FLY_APP_NAME
+    value: realtime
+  - name: APP_NAME
+    value: realtime
+  - name: ENABLE_TAILSCALE
+    value: "false"
+  - name: DB_AFTER_CONNECT_QUERY
+    value: "SET search_path TO _realtime"
+  - name: ERL_AFLAGS
+    value: -proto_dist inet_tcp
+  - name: DNS_NODES
+    value: "''"
+  - name: RLIMIT_NOFILE
+    value: "10000"
+  - name: SEED_SELF_HOST
+    value: "true"
+  - name: RUN_JANITOR
+    value: "true"
+  storage:
+  - name: REQUEST_ALLOW_X_FORWARDED_PATH
+    value: "true"
+  - name: FILE_SIZE_LIMIT
+    value: "52428800"
+  - name: FILE_STORAGE_BACKEND_PATH
+    value: /var/lib/storage
+  - name: TENANT_ID
+    value: stub
+  - name: REGION
+    value: stub
+  - name: GLOBAL_S3_BUCKET
+    value: stub
+  - name: ENABLE_IMAGE_TRANSFORMATION
+    value: "true"
+
+ingress:
+  enabled: false

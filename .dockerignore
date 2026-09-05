@@ -1,0 +1,9 @@
+.git
+.github
+examples
+README.md
+NOTICE
+LICENSE
+renovate.json
+scripts/sync-upstream.sh
+scripts/smoke-test.sh

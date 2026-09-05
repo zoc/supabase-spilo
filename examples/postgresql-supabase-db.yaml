@@ -1,0 +1,70 @@
+apiVersion: acid.zalan.do/v1
+kind: postgresql
+metadata:
+  name: supabase-db
+  namespace: supabase
+spec:
+  teamId: supabase
+  dockerImage: docker.io/fzoc/supabase-spilo:18
+  volume:
+    size: 5Gi
+  numberOfInstances: 2
+  postgresql:
+    version: "18"
+    parameters:
+      # Spilo appends timescaledb, pg_cron and pg_stat_kcache to its own
+      # default list ONLY while the user has not set this key
+      # (configure_spilo.py:1165). Setting it means owning the whole list --
+      # drop one of Spilo's own entries here and it is silently gone.
+      shared_preload_libraries: "bg_mon,pg_stat_statements,pgextwlist,pg_auth_mon,set_user,timescaledb,pg_cron,pg_stat_kcache,pg_net,pgsodium,supautils,pg_tle"
+      # Same override rule applies to extwlist.extensions (line 1168).
+      extwlist.extensions: "btree_gin,btree_gist,citext,extra_window_functions,first_last_agg,hll,hstore,hypopg,intarray,ltree,pgcrypto,pgq,pgq_node,pg_trgm,postgres_fdw,roaringbitmap,tablefunc,uuid-ossp,vector,timescaledb,pg_partman,pg_net,pgsodium,supabase_vault,pg_graphql,pgjwt,pg_jsonschema,wrappers,pgmq,index_advisor,pg_tle"
+      pgsodium.getkey_script: "/usr/share/postgresql/18/extension/pgsodium_getkey"
+      # Realtime's Postgres Changes reads a logical replication slot.
+      wal_level: logical
+      # Spilo defaults this to -1. An idle Realtime slot with no ceiling
+      # pins WAL until the volume fills, so give it a bound.
+      max_slot_wal_keep_size: 2GB
+  # Spilo's default pg_hba is "hostnossl all all all reject" + "hostssl ... md5",
+  # i.e. TLS is mandatory off-localhost. The Supabase chart hardcodes
+  # DB_SSL: disable in its auth/rest/storage/meta Deployment templates with no
+  # values hook to change it, so every service is rejected at connect time.
+  # Overriding pg_hba REPLACES Spilo's list, so all of its own entries are
+  # repeated here; the added line is the podCIDR-scoped md5 one, which must sit
+  # BEFORE the reject (pg_hba is first-match-wins).
+  #
+  # TRIAL ONLY. The right fix is a values-driven sslmode in the chart -- this
+  # trades in-cluster TLS for the chart working unmodified.
+  patroni:
+    pg_hba:
+    - local     all          all                              trust
+    - hostssl   all          +zalandos   127.0.0.1/32         pam
+    - host      all          all         127.0.0.1/32         md5
+    - hostssl   all          +zalandos   ::1/128              pam
+    - host      all          all         ::1/128              md5
+    - local     replication  standby                          trust
+    - hostssl   replication  standby     all                  md5
+    # Replace with YOUR pod CIDR: kubectl get node <node> -o jsonpath='{.spec.podCIDR}'
+    - host      all          all         10.0.0.0/8           md5
+    - hostnossl all          all         all                  reject
+    - hostssl   all          +zalandos   all                  pam
+    - hostssl   all          all         all                  md5
+  # Spilo's runit unit scrubs the environment before exec'ing Patroni, so a
+  # secret can only reach the bootstrap script as a file.
+  additionalVolumes:
+  - name: supabase-bootstrap
+    mountPath: /etc/supabase-bootstrap
+    targetContainers:
+    - postgres
+    volumeSource:
+      secret:
+        secretName: supabase-secrets
+  enableConnectionPooler: false
+  enableLogicalBackup: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
