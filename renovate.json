@@ -9,13 +9,22 @@
   "automerge": false,
   "prCreation": "immediate",
   "semanticCommits": "enabled",
-  "labels": ["dependencies", "renovate"],
+  "labels": [
+    "dependencies",
+    "renovate"
+  ],
   "prConcurrentLimit": 5,
+  "dockerfile": {
+    "description": "Off deliberately. The base image arrives through ARG interpolation in FROM, and Renovate resolves the ARG default -- so the built-in manager finds ghcr.io/zalando/spilo-18 once per build stage, on top of the custom manager below, and the same bump would be proposed three times. The custom manager wins because it carries versioning=regex for Spilo's 4.1-pN scheme, which plain docker versioning would mis-order against 4.10-p1.",
+    "enabled": false
+  },
   "customManagers": [
     {
       "customType": "regex",
       "description": "Dockerfile ARGs. Renovate's dockerfile manager cannot read the base image here because the tag arrives through ARG interpolation in FROM, so the ARG lines are annotated instead.",
-      "managerFilePatterns": ["/^Dockerfile$/"],
+      "managerFilePatterns": [
+        "/^Dockerfile$/"
+      ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: extractVersion=(?<extractVersion>\\S+))?(?: versioning=(?<versioning>\\S+))?\\s+ARG [A-Z0-9_]+=(?<currentValue>\\S+)"
       ],
@@ -24,7 +33,9 @@
     {
       "customType": "regex",
       "description": "The Supabase release ref in upstream.env, which decides which bootstrap SQL gets vendored.",
-      "managerFilePatterns": ["/^upstream\\.env$/"],
+      "managerFilePatterns": [
+        "/^upstream\\.env$/"
+      ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+SUPABASE_POSTGRES_REF=(?<currentValue>\\S+)"
       ],
@@ -33,7 +44,9 @@
     {
       "customType": "regex",
       "description": "The supabase/supabase commit the self-host-only SQL is vendored from. That path has no release of its own, so it is tracked as a branch digest.",
-      "managerFilePatterns": ["/^upstream\\.env$/"],
+      "managerFilePatterns": [
+        "/^upstream\\.env$/"
+      ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+SUPABASE_DOCKER_BRANCH=(?<currentValue>\\S+)\\s+SUPABASE_DOCKER_SHA=(?<currentDigest>[0-9a-f]{40})"
       ]
@@ -42,22 +55,36 @@
   "packageRules": [
     {
       "description": "supabase/postgres tags include build artefacts (-amchecktest, -orioledb-*, -x86) and at least one malformed entry with an 8-digit final component (17.6.1.15799999). The regex versioning drops the suffixed ones; this caps the final component to keep the malformed ones out.",
-      "matchDepNames": ["supabase/postgres"],
+      "matchDepNames": [
+        "supabase/postgres"
+      ],
       "allowedVersions": "/^\\d+\\.\\d+\\.\\d+\\.\\d{1,4}$/"
     },
     {
       "description": "The Spilo base and the Supabase SQL are the two bumps that change behaviour rather than just patch levels - keep them in their own PRs so the diff is reviewable.",
-      "matchDepNames": ["ghcr.io/zalando/spilo-18", "supabase/postgres", "https://github.com/supabase/supabase"],
+      "matchDepNames": [
+        "ghcr.io/zalando/spilo-18",
+        "supabase/postgres",
+        "https://github.com/supabase/supabase"
+      ],
       "groupName": null,
-      "addLabels": ["upstream"]
+      "addLabels": [
+        "upstream"
+      ]
     },
     {
       "description": "Statically linked into pg_net.so, so it gets no distro security updates - these should land promptly.",
-      "matchDepNames": ["curl/curl"],
-      "addLabels": ["security"]
+      "matchDepNames": [
+        "curl/curl"
+      ],
+      "addLabels": [
+        "security"
+      ]
     },
     {
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "groupName": "github actions",
       "automerge": true,
       "automergeType": "pr"
