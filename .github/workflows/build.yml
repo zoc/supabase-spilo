@@ -84,6 +84,10 @@ jobs:
       - name: Bootstrap test (${{ matrix.arch }})
         run: ./scripts/bootstrap-test.sh supabase-spilo:ci
 
+      # The bootstrap runs once, so everything after it rides on migrate.sh.
+      - name: Upgrade test (${{ matrix.arch }})
+        run: ./scripts/upgrade-test.sh supabase-spilo:ci
+
       - name: Log in to Docker Hub
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3

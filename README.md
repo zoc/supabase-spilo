@@ -14,8 +14,9 @@
 >
 > **What has not been tested at all:** any multi-node or production cluster; backup and restore (neither
 > wal-g nor the operator's logical backups have ever been exercised against this image); sustained load or
-> long-running operation; Postgres major-version upgrades; and — see [Updating](#updating) — upgrading a
-> database that has *already* been bootstrapped, which this image currently has no mechanism for.
+> long-running operation; and Postgres major-version upgrades. In-place upgrades of an existing database have
+> a mechanism (`scripts/migrate.sh`, see [Updating](#updating)) and a test, but have never been run against
+> anything but a throwaway cluster.
 >
 > It also deliberately deviates from upstream Supabase in three places, one of which trades away in-cluster
 > TLS. Read [Things that will bite you](#things-that-will-bite-you) before deploying it anywhere, and the
@@ -152,13 +153,44 @@ That way the migration diff an upgrade actually implies shows up in the PR, whic
 > **The bootstrap runs once, at initdb, and never again.** Patroni invokes `post_init` only when it
 > initialises a brand new cluster, and the script additionally no-ops if the `auth` schema already exists.
 >
-> So bumping the Supabase ref and rebuilding the image gives new *clusters* the new migrations. It does
-> **not** apply them to a database that is already running — that cluster keeps whatever schema it was
-> bootstrapped with, on an image whose vendored SQL has moved on underneath it.
+> So rolling an existing cluster onto a newer image gives it new binaries, new extension `.so` files and new
+> SQL on disk — and leaves its schema exactly where it was. Nothing updates installed extension versions
+> either; Postgres never runs `ALTER EXTENSION … UPDATE` on its own.
 >
-> There is no upgrade path implemented here. Applying new upstream migrations to an existing database is
-> currently a manual job, and one nobody has rehearsed. If you plan to run this for longer than an
-> experiment, solve that first.
+> Closing that gap is what `scripts/migrate.sh` is for. It is not automatic: you have to run it.
+
+### Upgrading an existing database
+
+After rolling the cluster onto a newer image, run the migration Job (`examples/job-migrate.yaml`), or invoke
+it directly:
+
+```bash
+kubectl exec -n supabase "$LEADER" -c postgres -- \
+  env CONN=dbname=postgres /scripts/migrate.sh --dry-run
+```
+
+It works out which files are new by comparing what is in the image against what the database records in
+`supabase_spilo.applied_migrations`, applies only those, and then brings extension versions up.
+
+| flag | |
+| --- | --- |
+| `--dry-run` | list the delta and the extension updates, change nothing |
+| `--baseline` | adopt a database bootstrapped by an image older than migration tracking — records what is in the image as applied **without running it** |
+| `--skip-extensions` | skip `ALTER EXTENSION … UPDATE` |
+
+**Failure semantics.** Each migration runs in its own transaction with its tracking row written *inside* that
+transaction, so a migration either fully applies and is recorded, or does neither — never half. On failure the
+run stops immediately and exits non-zero; migrations already applied stay applied, and a re-run resumes from
+the failure. This is deliberately not all-or-nothing: a resumable partial upgrade beats an unresumable
+rollback, and statements like `CREATE DATABASE` cannot be transactional anyway.
+
+It also refuses to run against a replica, takes an advisory lock so two Jobs cannot race, and warns when a
+file recorded as applied has changed upstream or vanished from the image.
+
+**Adopting an existing database.** A cluster bootstrapped before this mechanism existed has no tracking table.
+`migrate.sh` refuses to guess and tells you to re-run with `--baseline`, which records the image's files as
+applied without executing them. That is only correct if the database was bootstrapped from the *same* image
+ref or newer — so baseline first, **then** update the image.
 
 ## Building and testing locally
 
@@ -181,7 +213,17 @@ directory, every phase — and asserts what came out: each service role exists a
 `pg_stat_statements`, and every vendored `.sql` file actually executed.
 
 That last count is the one that matters when upstream adds a migration: it fails if a file is vendored but never
-run. Both run in CI, on both architectures.
+run.
+
+```bash
+./scripts/upgrade-test.sh supabase-spilo:local
+```
+
+The upgrade test bootstraps a database, simulates a newer image arriving with extra migrations, and checks
+`migrate.sh` applies exactly those and records them; that a second run is a no-op; and that a deliberately
+broken migration fails the run *without* being recorded, so a re-run retries it.
+
+All three run in CI, on both architectures.
 
 ## Does it pick up new upstream migrations?
 
@@ -191,8 +233,8 @@ names, so a new file is vendored automatically, and `run_phase` executes everyth
 migrations land after the existing ones and before the `zz-` prefixed self-host extras, which is the order the
 upstream compose applies them in.
 
-For an **existing** cluster, no — see the warning under [Updating](#updating). The bootstrap only ever runs at
-initdb.
+For an **existing** cluster, only when you run `scripts/migrate.sh` — the bootstrap itself never runs again.
+See [Upgrading an existing database](#upgrading-an-existing-database).
 
 ## About pg_net
 

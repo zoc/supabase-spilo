@@ -14,6 +14,9 @@ set -euo pipefail
 CONN="${2:-dbname=postgres}"
 ROOT=/supabase-migrations
 
+# shellcheck source=scripts/lib-migrate.sh
+. /scripts/lib-migrate.sh
+
 # Secrets arrive as FILES, not env vars. Spilo's runit unit for Patroni
 # (/etc/service/patroni/run) unsets everything outside a small allowlist --
 # "We don't want accidentally disclose sensitive information" -- before it
@@ -69,9 +72,13 @@ run_phase() {
     while IFS= read -r f; do
         [ -n "$f" ] || continue
         log "  $(basename "$f")"
-        psql -d "$CONN" -X -v ON_ERROR_STOP=1 -q -f "$f"
+        # Recorded as it goes, so migrate.sh can later work out the delta
+        # against a newer image instead of re-running everything.
+        apply_file "$dir" "$f"
     done < <(find "$ROOT/$dir" -maxdepth 1 -name '*.sql' -type f | LC_ALL=C sort)
 }
+
+ensure_tracking
 
 run_phase 00-pre-init     "phase 1: roles Spilo does not create"
 run_phase 10-init-scripts "phase 2: core schemas"
@@ -79,4 +86,5 @@ run_phase 15-local        "phase 2b: local fixes over upstream init"
 run_phase 20-migrations   "phase 3: migrations"
 run_phase 30-post         "phase 4: zalando-side hardening"
 
+log "recorded $(pgq "SELECT count(*) FROM ${TRACK_TABLE}") applied files in ${TRACK_TABLE}"
 log "done"

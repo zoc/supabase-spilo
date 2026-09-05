@@ -128,11 +128,13 @@ RUN printf '%s\n' '#!/bin/sh' 'od -vN 32 -An -tx1 /dev/urandom | tr -d " \n"' \
 
 COPY --chown=postgres:postgres migrations/ /supabase-migrations/
 COPY --chown=postgres:postgres scripts/supabase_post_init.sh /scripts/supabase_post_init.sh
+COPY --chown=postgres:postgres scripts/lib-migrate.sh /scripts/lib-migrate.sh
+COPY --chown=postgres:postgres scripts/migrate.sh /scripts/migrate.sh
 
 # Spilo's own post_init.sh is what Patroni invokes; appending to it is how this
 # hooks in without replacing anything Spilo does first (its admin roles, the
 # metric_helpers schema, the log foreign tables).
-RUN chmod 0755 /scripts/supabase_post_init.sh \
+RUN chmod 0755 /scripts/supabase_post_init.sh /scripts/migrate.sh \
  && printf '\n%s\n%s\n' '# Supabase bootstrap (added by supabase-spilo)' \
       '/scripts/supabase_post_init.sh "$@"' >> /scripts/post_init.sh
 
