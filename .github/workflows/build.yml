@@ -180,9 +180,14 @@ jobs:
           PGVERSION=$(sed -n 's/^ARG PGVERSION=\(.*\)$/\1/p' Dockerfile | head -1)
           SPILO=$(sed -n 's/^ARG SPILO_VERSION=\(.*\)$/\1/p' Dockerfile | head -1)
           REF="${IMAGE}:${PGVERSION}-${SPILO}-${SUPABASE_POSTGRES_REF}"
-          docker buildx imagetools inspect "$REF" --raw | tee /tmp/manifest.json
+          docker buildx imagetools inspect "$REF" --raw > /tmp/manifest.json
+          jq . /tmp/manifest.json
+          # Parsed, not grepped: `--raw` pretty-prints, so a naive
+          # "architecture":"amd64" match never hits.
           for a in amd64 arm64; do
-            grep -q "\"architecture\":\"$a\"" /tmp/manifest.json \
-              || { echo "manifest is missing $a"; exit 1; }
+            jq -e --arg a "$a" \
+              'any(.manifests[]?; .platform.architecture == $a and .platform.os == "linux")' \
+              /tmp/manifest.json >/dev/null \
+              || { echo "manifest is missing linux/$a"; exit 1; }
           done
-          echo "manifest carries amd64 and arm64"
+          echo "manifest carries linux/amd64 and linux/arm64"
