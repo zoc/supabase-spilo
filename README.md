@@ -111,17 +111,41 @@ dropping `APP_NAME` crashes realtime at boot.
 
 ### Spilo's own objects live in `public`
 
-Spilo creates 23 objects in `public` — log foreign tables, `failed_authentication_*`, `pg_stat_*` views — and `public`
-is the schema PostgREST exposes. Four of them are granted `SELECT` to `PUBLIC`, which `anon` inherits, so they become
-readable with nothing but the anon key. `migrations/30-post` revokes that. Note it must be a revoke **from `PUBLIC`**:
-`anon` holds no direct grant, so revoking from `anon` is silently a no-op.
+Spilo creates 23 objects in `public`: an inheritance parent `postgres_log` with one `file_fdw` foreign table per log
+file beneath it, a `failed_authentication_*` view over each, and the `pg_stat_*` / `pg_auth_mon` extension views. On a
+stock Spilo that is invisible. Under Supabase, `public` is the schema PostgREST exposes and Studio's table editor
+lists, so Spilo's internals appear as if they were your tables.
 
-They are still *visible* in Studio's table editor, which is cosmetic but constant.
+`migrations/40-reconcile` deals with both halves of this:
+
+- **The grants.** Four of those views are granted `SELECT` to `PUBLIC`, which `anon` inherits — readable over the API
+  with nothing but the anon key. Note the fix must be a revoke **from `PUBLIC`**: `anon` holds no direct grant, so
+  revoking from `anon` is silently a no-op.
+- **The clutter.** The 17 log objects are moved to a dedicated `spilo` schema, leaving `public` with just the five
+  extension views. Nothing in Spilo reads them back — `post_init.sh` creates them, and the only other script that
+  mentions them tails the CSV files on disk rather than querying the tables.
+
+### `post_init` runs on every promotion, not just at bootstrap
+
+This one is easy to get wrong, and the reason the phase above is *reconciliation* rather than a migration. Spilo wires
+`post_init.sh` into two places:
+
+- Patroni's `bootstrap.post_init`, once, after `initdb`; **and**
+- its Patroni `on_role_change` callback (`/scripts/on_role_change.sh`), which `exec`s `post_init.sh` on **every
+  promotion to primary**.
+
+So after every failover, Spilo's own `post_init` runs again and re-creates its log objects in `public`
+(`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`) — putting back exactly what was moved out. Anything that
+undoes Spilo's setup therefore has to run every time too, which is what `40-reconcile` is for: it moves the objects on
+a fresh database and drops the re-created duplicates on every promotion thereafter.
+
+The migration phases stay guarded to a fresh database, so they do **not** re-run on promotion.
 
 ## How the bootstrap runs
 
 `scripts/supabase_post_init.sh` is appended to Spilo's own `post_init.sh`, so Spilo's setup happens first. It runs on
-the leader only, once, at initdb time, and is a no-op if the `auth` schema already exists.
+the leader only — at initdb **and on every promotion to primary** (see below). The migration phases are skipped once
+the `auth` schema exists; the reconcile phase runs every time.
 
 | phase | source | what it does |
 | --- | --- | --- |
@@ -129,7 +153,7 @@ the leader only, once, at initdb time, and is a no-op if the `auth` schema alrea
 | `10-init-scripts` | upstream, vendored | the four init-scripts plus `webhooks`/`jwt`/`roles` from the monorepo's `docker/` |
 | `15-local` | this repo | sets `supabase_admin`'s password — upstream's `roles.sql` never does, because in Supabase's image it is the initdb superuser and already has one |
 | `20-migrations` | upstream, vendored | the dbmate migration set, minus `demote-postgres` |
-| `30-post` | this repo | revokes the `PUBLIC` grants on Spilo's `pg_stat_*` views |
+| `40-reconcile` | this repo | **runs every time**, not just at bootstrap: revokes the `PUBLIC` grants on Spilo's `pg_stat_*` views and keeps its log objects out of `public` |
 
 There is an ordering trap worth knowing: `20250312095419` re-owns `pgbouncer.get_auth`, but the migration that
 *creates* it is `20250417190610` — a month later. On a fresh database the March one runs first, so `00-pre-init`
@@ -153,7 +177,8 @@ That way the migration diff an upgrade actually implies shows up in the PR, whic
 > **The bootstrap runs once, at initdb, and never again.** Patroni invokes `post_init` only when it
 > initialises a brand new cluster, and the script additionally no-ops if the `auth` schema already exists.
 >
-> So rolling an existing cluster onto a newer image gives it new binaries, new extension `.so` files and new
+> It does also run on every promotion to primary, but the migration phases are guarded to a fresh database, so
+> rolling an existing cluster onto a newer image gives it new binaries, new extension `.so` files and new
 > SQL on disk — and leaves its schema exactly where it was. Nothing updates installed extension versions
 > either; Postgres never runs `ALTER EXTENSION … UPDATE` on its own.
 >

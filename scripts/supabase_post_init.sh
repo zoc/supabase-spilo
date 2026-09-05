@@ -2,9 +2,14 @@
 # Runs the Supabase bootstrap from inside Patroni's bootstrap.post_init callback,
 # appended to Spilo's own /scripts/post_init.sh.
 #
-# Patroni calls post_init once, on the leader, at initdb time only -- so this
-# does not run on replicas or on restart. The auth-schema check below is belt
-# and braces for a re-bootstrap onto a restored volume.
+# Spilo runs post_init.sh in TWO situations, not one:
+#   - Patroni's bootstrap.post_init, once, after initdb; and
+#   - its on_role_change callback (/scripts/on_role_change.sh), which execs
+#     post_init.sh on EVERY promotion to primary.
+# So this runs again after every failover and every restart of the leader. The
+# migration phases are guarded to a fresh database; the reconcile phase runs
+# every time on purpose, because Spilo's own post_init has just re-created and
+# re-granted its objects and that has to be undone again afterwards.
 #
 #   $1  HUMAN_ROLE   (from Spilo's configured post_init arguments)
 #   $2  connstring   (appended by Patroni)
@@ -55,9 +60,10 @@ if [ "$(psql -d "$CONN" -XtAc 'SELECT pg_is_in_recovery()')" = "t" ]; then
     log "on a replica, nothing to do"; exit 0
 fi
 
-if [ "$(psql -d "$CONN" -XtAc "SELECT count(*) FROM pg_namespace WHERE nspname='auth'")" != "0" ]; then
-    log "auth schema already present, skipping"; exit 0
-fi
+# The auth schema is the marker for "this database has already been built".
+already_bootstrapped() {
+    [ "$(psql -d "$CONN" -XtAc "SELECT count(*) FROM pg_namespace WHERE nspname='auth'")" != "0" ]
+}
 
 # Order matters: these are dbmate migrations, applied in filename order.
 # Sorted explicitly under LC_ALL=C rather than left to glob expansion, which is
@@ -78,13 +84,31 @@ run_phase() {
     done < <(find "$ROOT/$dir" -maxdepth 1 -name '*.sql' -type f | LC_ALL=C sort)
 }
 
-ensure_tracking
+# Same as run_phase but without the bookkeeping: reconcile files are applied on
+# every run by design, so recording them would be meaningless and would make
+# migrate.sh believe they were already done.
+run_phase_unrecorded() {
+    local dir="$1" label="$2" f
+    [ -d "$ROOT/$dir" ] || { log "no $dir, skipping $label"; return 0; }
+    log "--- $label ---"
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        log "  $(basename "$f")"
+        psql -d "$CONN" -X -v ON_ERROR_STOP=1 -q -f "$f"
+    done < <(find "$ROOT/$dir" -maxdepth 1 -name '*.sql' -type f | LC_ALL=C sort)
+}
 
-run_phase 00-pre-init     "phase 1: roles Spilo does not create"
-run_phase 10-init-scripts "phase 2: core schemas"
-run_phase 15-local        "phase 2b: local fixes over upstream init"
-run_phase 20-migrations   "phase 3: migrations"
-run_phase 30-post         "phase 4: zalando-side hardening"
+if already_bootstrapped; then
+    log "already bootstrapped; skipping the migration phases"
+else
+    ensure_tracking
+    run_phase 00-pre-init     "phase 1: roles Spilo does not create"
+    run_phase 10-init-scripts "phase 2: core schemas"
+    run_phase 15-local        "phase 2b: local fixes over upstream init"
+    run_phase 20-migrations   "phase 3: migrations"
+    log "recorded $(pgq "SELECT count(*) FROM ${TRACK_TABLE}") applied files in ${TRACK_TABLE}"
+fi
 
-log "recorded $(pgq "SELECT count(*) FROM ${TRACK_TABLE}") applied files in ${TRACK_TABLE}"
+run_phase_unrecorded 40-reconcile "reconcile: undo what Spilo re-creates in public"
+
 log "done"

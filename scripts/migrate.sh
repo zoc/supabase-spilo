@@ -79,10 +79,15 @@ is_applied() {
     return 1
 }
 
+# 40-reconcile is excluded on purpose: those files are applied on every run,
+# not once, so they are never "pending" and are never recorded.
+RECONCILE_DIR=40-reconcile
+
 PENDING=()
 for phase_dir in "$ROOT"/*/; do
     [ -d "$phase_dir" ] || continue
     phase="$(basename "$phase_dir")"
+    [ "$phase" = "$RECONCILE_DIR" ] && continue
     while IFS= read -r f; do
         [ -n "$f" ] || continue
         is_applied "${phase}/$(basename "$f")" || PENDING+=("${phase}|${f}")
@@ -139,6 +144,23 @@ else
             apply_file "$phase" "$f"
         fi
     done
+fi
+
+# ------------------------------------------------------------ reconciliation
+# Spilo re-creates its objects in public on every promotion to primary, so this
+# is re-applied here too -- an image roll may also have added new hardening
+# that the running database has never seen.
+if [ -d "$ROOT/$RECONCILE_DIR" ]; then
+    log "reconciling (applied every run, never recorded)"
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if [ "$DRY_RUN" = "1" ]; then
+            log "  would reconcile $(basename "$f")"
+        else
+            log "  $(basename "$f")"
+            pg -f "$f"
+        fi
+    done < <(find "$ROOT/$RECONCILE_DIR" -maxdepth 1 -name '*.sql' -type f | LC_ALL=C sort)
 fi
 
 # ------------------------------------------------------- extension versions

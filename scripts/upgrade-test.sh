@@ -45,11 +45,14 @@ grep -E 'recorded [0-9]+ applied files' /tmp/boot.log
 echo
 echo "==> simulating a newer image: two extra migrations appear"
 docker exec "$NAME" bash -euo pipefail -c "
-cat > /supabase-migrations/20-migrations/20270401120000_added_after_bootstrap.sql <<'SQL'
+# Two files in two different phases, ordered so the later phase depends on the
+# earlier one -- which also checks the delta is applied in phase order, not
+# just filename order.
+cat > /supabase-migrations/15-local/01_added_after_bootstrap.sql <<'SQL'
 create table public.added_after_bootstrap(id int primary key);
 insert into public.added_after_bootstrap values (1);
 SQL
-cat > /supabase-migrations/30-post/01_added_after_bootstrap.sql <<'SQL'
+cat > /supabase-migrations/20-migrations/20270401120000_added_after_bootstrap.sql <<'SQL'
 comment on table public.added_after_bootstrap is 'applied by the upgrade path';
 SQL
 "
@@ -77,16 +80,21 @@ check() {
 }
 
 check 'new migration applied'      \"\$(q \"select count(*) from public.added_after_bootstrap\")\" 1
-check 'new 30-post file applied'   \"\$(q \"select obj_description('public.added_after_bootstrap'::regclass)\")\" 'applied by the upgrade path'
+check 'later-phase file applied'    \"\$(q \"select obj_description('public.added_after_bootstrap'::regclass)\")\" 'applied by the upgrade path'
 check 'both recorded'              \"\$(q \"select count(*) from supabase_spilo.applied_migrations where filename like '%added_after_bootstrap%'\")\" 2
 check 'tracking not exposed to anon' \"\$(q \"select has_schema_privilege('anon','supabase_spilo','USAGE')::text\")\" false
 
 # The point of the delta: nothing else should have re-run. auth.users would
 # already exist and a re-run of the init-scripts would have errored, but assert
 # the count explicitly so a silent double-apply is caught too.
-on_disk=\$(find /supabase-migrations -name '*.sql' -type f | wc -l)
+# Reconcile files are excluded on both sides: they are applied on every run
+# and never recorded, so counting them here would always be off by two.
+on_disk=\$(find /supabase-migrations -name '*.sql' -type f -not -path '*/40-reconcile/*' | wc -l)
 recorded=\$(q 'select count(*) from supabase_spilo.applied_migrations')
-check 'recorded == files on disk' \"\$recorded\" \"\$on_disk\"
+check 'recorded == migration files' \"\$recorded\" \"\$on_disk\"
+
+# And the reconcile phase must have actually run, not merely been skipped.
+check 'reconcile ran (logs out of public)' \"\$(q \"select count(*) from pg_class where relnamespace='public'::regnamespace and relname ~ '^postgres_log'\")\" 0
 
 [ \"\$fail\" = '0' ] || exit 1
 "
@@ -99,7 +107,7 @@ docker exec -e CONN='host=/tmp port=5432 dbname=postgres user=postgres' "$NAME" 
 
 echo
 echo "==> a failing migration must stop, and stay resumable"
-docker exec "$NAME" bash -c "cat > /supabase-migrations/30-post/02_broken.sql <<'SQL'
+docker exec "$NAME" bash -c "cat > /supabase-migrations/15-local/02_broken.sql <<'SQL'
 select * from a_table_that_does_not_exist;
 SQL"
 if docker exec -e CONN='host=/tmp port=5432 dbname=postgres user=postgres' "$NAME" \

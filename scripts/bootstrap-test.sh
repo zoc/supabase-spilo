@@ -46,6 +46,16 @@ psql -h /tmp -U postgres -q -c \"create role admin createdb\" || true
 psql -h /tmp -U postgres -q -c 'create extension if not exists pg_stat_statements schema public'
 psql -h /tmp -U postgres -q -c 'grant select on public.pg_stat_statements to public'
 
+# Spilo's log plumbing: an inheritance parent, a file_fdw foreign table under
+# it, and a view over that. Stood in so the reconcile phase has something to
+# relocate.
+psql -h /tmp -U postgres -q -c 'create extension if not exists file_fdw'
+psql -h /tmp -U postgres -q -c 'create server if not exists pglog foreign data wrapper file_fdw'
+printf 'x\n' > /tmp/fake.csv
+psql -h /tmp -U postgres -q -c 'create table if not exists public.postgres_log (line text)'
+psql -h /tmp -U postgres -q -c \"create foreign table if not exists public.postgres_log_0 () inherits (public.postgres_log) server pglog options (filename '/tmp/fake.csv', format 'csv')\"
+psql -h /tmp -U postgres -q -c 'create or replace view public.failed_authentication_0 as select * from public.postgres_log_0'
+
 # Secrets reach the bootstrap as files, never env -- Spilo's runit unit scrubs
 # the environment before exec'ing Patroni.
 mkdir -p /tmp/secrets
@@ -109,10 +119,16 @@ check 'jwt secret set on database' \"\$(q \"select count(*) from pg_db_role_sett
 # The PostgREST-critical setting; wrong here and every API request 500s.
 check 'authenticator preloads supautils' \"\$(q \"select count(*) from pg_roles where rolname='authenticator' and array_to_string(rolconfig,',') like '%supautils%'\")\" 1
 
-# 30-post: anon must not inherit Spilo's PUBLIC grant on pg_stat_statements.
+# 40-reconcile: anon must not inherit Spilo's PUBLIC grant on pg_stat_statements.
 if [ \"\$(q \"select count(*) from pg_class where relname='pg_stat_statements' and relnamespace='public'::regnamespace\")\" = '1' ]; then
   check 'anon cannot read pg_stat_statements' \"\$(q \"select has_table_privilege('anon','public.pg_stat_statements','SELECT')::text\")\" false
 fi
+
+# The reconcile phase must pull Spilo's log objects out of public -- that is
+# what stops 17 of Spilo's internals appearing as if they were user tables.
+check 'spilo logs gone from public' \"\$(q \"select count(*) from pg_class where relnamespace='public'::regnamespace and (relname ~ '^postgres_log(_[0-9]+)*\$' or relname ~ '^failed_authentication(_[0-9]+)*\$')\")\" 0
+check 'spilo logs relocated'        \"\$(q \"select count(*) from pg_class where relnamespace='spilo'::regnamespace and relkind in ('r','v','f')\")\" 3
+check 'spilo schema closed to anon' \"\$(q \"select has_schema_privilege('anon','spilo','USAGE')::text\")\" false
 
 [ \"\$fail\" = '0' ] || { echo; echo 'bootstrap produced an unexpected schema'; exit 1; }
 "
