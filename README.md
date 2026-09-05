@@ -1,5 +1,31 @@
 # supabase-spilo
 
+> [!WARNING]
+> **Homelab project. Barely tested. Use at your own risk — you can lose data with this.**
+>
+> This is a personal homelab experiment, published only in case it is useful to someone else. It is not a
+> product, it is not supported, and it has never run in production — mine or anyone else's. There is no
+> guarantee it ever will.
+>
+> **What has actually been exercised:** bootstrapping a fresh two-instance cluster on a *single-node local
+> Kubernetes* (OrbStack), the REST / auth / storage / meta / studio endpoints answering through the gateway,
+> RLS behaving, one Patroni failover and one switchover, and the CI smoke test on `linux/amd64` and
+> `linux/arm64`.
+>
+> **What has not been tested at all:** any multi-node or production cluster; backup and restore (neither
+> wal-g nor the operator's logical backups have ever been exercised against this image); sustained load or
+> long-running operation; Postgres major-version upgrades; and — see [Updating](#updating) — upgrading a
+> database that has *already* been bootstrapped, which this image currently has no mechanism for.
+>
+> It also deliberately deviates from upstream Supabase in three places, one of which trades away in-cluster
+> TLS. Read [Things that will bite you](#things-that-will-bite-you) before deploying it anywhere, and the
+> [Caveats](#caveats) before storing anything in it.
+>
+> This is published under the Apache License 2.0. Sections 7 and 8 — no warranty, no liability — are not
+> boilerplate here; take them literally. The author cannot be held responsible for any data loss, outage or
+> other damage arising from its use. Do not point it at data you cannot afford to lose, and prove your
+> restore path works before you trust it with anything.
+
 Supabase's Postgres, rebuilt on [Zalando's Spilo](https://github.com/zalando/spilo) so it can run under the
 [postgres-operator](https://github.com/zalando/postgres-operator) with Patroni replication and automatic failover,
 instead of the single unmanaged container every self-host guide ships.
@@ -121,6 +147,18 @@ A Renovate PR that bumps a Supabase ref does not itself update the vendored SQL 
 ```
 
 That way the migration diff an upgrade actually implies shows up in the PR, which is the part worth reviewing.
+
+> [!IMPORTANT]
+> **The bootstrap runs once, at initdb, and never again.** Patroni invokes `post_init` only when it
+> initialises a brand new cluster, and the script additionally no-ops if the `auth` schema already exists.
+>
+> So bumping the Supabase ref and rebuilding the image gives new *clusters* the new migrations. It does
+> **not** apply them to a database that is already running — that cluster keeps whatever schema it was
+> bootstrapped with, on an image whose vendored SQL has moved on underneath it.
+>
+> There is no upgrade path implemented here. Applying new upstream migrations to an existing database is
+> currently a manual job, and one nobody has rehearsed. If you plan to run this for longer than an
+> experiment, solve that first.
 
 ## Building and testing locally
 
