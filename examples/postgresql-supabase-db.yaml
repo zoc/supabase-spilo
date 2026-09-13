@@ -5,7 +5,7 @@ metadata:
   namespace: supabase
 spec:
   teamId: supabase
-  dockerImage: docker.io/fzoc/supabase-spilo:18
+  dockerImage: ghcr.io/zoc/supabase-spilo:18
   volume:
     size: 5Gi
   numberOfInstances: 2

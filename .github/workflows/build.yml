@@ -13,7 +13,8 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE: fzoc/supabase-spilo
+  # ghcr.io repositories are always lowercase; this repo's path already is.
+  IMAGE: ghcr.io/${{ github.repository }}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -57,6 +58,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
 
@@ -88,12 +90,15 @@ jobs:
       - name: Upgrade test (${{ matrix.arch }})
         run: ./scripts/upgrade-test.sh supabase-spilo:ci
 
-      - name: Log in to Docker Hub
+      # GHCR takes the workflow's own token, so the image needs no long-lived
+      # registry credentials in repository secrets.
+      - name: Log in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # Push by digest only; the merge job below assembles the tags. Pushing
       # tags from both matrix legs would have them race and clobber each other.
@@ -104,7 +109,7 @@ jobs:
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          outputs: type=image,name=docker.io/${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.arch }}
           provenance: false
 
@@ -131,6 +136,9 @@ jobs:
     needs: build
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
 
@@ -142,11 +150,12 @@ jobs:
           pattern: digest-*
           merge-multiple: true
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # The tag set is derived from what actually determines the image:
       # the Postgres major, the Spilo base, and the Supabase ref it vendors.
@@ -172,10 +181,14 @@ jobs:
       - name: Create manifest list
         run: |
           set -euo pipefail
-          [ "$(ls /tmp/digests | wc -l)" -eq 2 ] || { echo "expected 2 digests, got:"; ls /tmp/digests; exit 1; }
+          # Globbed into an array rather than counted with `ls`: one expansion
+          # serves both the guard and the loop below.
+          shopt -s nullglob
+          DIGESTS=(/tmp/digests/*)
+          [ "${#DIGESTS[@]}" -eq 2 ] || { echo "expected 2 digests, got: ${DIGESTS[*]:-none}"; exit 1; }
           SRCS=""
-          for f in /tmp/digests/*; do
-            SRCS="$SRCS docker.io/${IMAGE}@$(cat "$f")"
+          for f in "${DIGESTS[@]}"; do
+            SRCS="$SRCS ${IMAGE}@$(cat "$f")"
           done
           ARGS=""
           IFS=',' read -ra T <<< "${{ steps.meta.outputs.tags }}"

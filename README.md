@@ -34,10 +34,12 @@ instead of the single unmanaged container every self-host guide ships.
 [![build](https://github.com/zoc/supabase-spilo/actions/workflows/build.yml/badge.svg)](https://github.com/zoc/supabase-spilo/actions/workflows/build.yml)
 
 ```text
-docker.io/fzoc/supabase-spilo:18
+ghcr.io/zoc/supabase-spilo:18
 ```
 
-`linux/amd64` and `linux/arm64`.
+`linux/amd64` and `linux/arm64`. Published to the GitHub Container Registry by
+[`build.yml`](.github/workflows/build.yml); tags are `<pg>-<spilo>-<supabase-ref>`, `<pg>-<spilo>` and `<pg>`, plus
+`latest` on `main` and the git tag for `v*` releases.
 
 ## Why
 
@@ -237,7 +239,7 @@ file recorded as applied has changed upstream or vanished from the image.
 > migrations never arrived on disk. Use `18-<spilo>-<supabase-ref>`, or pin the digest outright:
 >
 > ```yaml
-> dockerImage: docker.io/fzoc/supabase-spilo@sha256:<digest>
+> dockerImage: ghcr.io/zoc/supabase-spilo@sha256:<digest>
 > ```
 
 **Adopting an existing database.** A cluster bootstrapped before this mechanism existed has no tracking table.
