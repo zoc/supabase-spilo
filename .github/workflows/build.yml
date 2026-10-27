@@ -26,7 +26,7 @@ jobs:
   # disagrees, so a version bump can never land without the migrations it
   # actually pulls in -- which is the diff worth reviewing.
   vendored-sql:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - name: Vendored SQL matches upstream.env
@@ -35,7 +35,7 @@ jobs:
         run: ./scripts/sync-upstream.sh --check
 
   shellcheck:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - run: shellcheck scripts/*.sh
@@ -135,7 +135,7 @@ jobs:
   merge:
     needs: build
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
