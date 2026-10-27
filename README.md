@@ -123,6 +123,15 @@ None of these verify the server certificate: Spilo's is self-signed with no CA t
 the server is not authenticated. Verified on a live cluster — every client connection shows `ssl=t`, `TLSv1.3` in
 `pg_stat_ssl`, with Spilo's `pg_hba` untouched.
 
+**Realtime's `DB_SSL` covers only half of it.** It applies to realtime's own metadata connection. Postgres Changes
+connects through the *tenant's* settings instead, and `SEED_SELF_HOST=true` re-creates that tenant on every boot with
+`ssl_enforced: false` hardcoded (`priv/repo/seeds.exs`). That connection is then rejected by `pg_hba`, and every
+channel join fails with `UnableToConnectToProject`. Broadcast and presence still work, so this is easy to miss. After
+realtime has started, upsert the tenant with `"ssl_enforced": true` through its management API (`PUT
+/api/tenants/realtime-dev` on port 4000, authorised with a JWT signed by `API_JWT_SECRET`, e.g. the service-role key).
+Then set `SEED_SELF_HOST=false`, or the next restart seeds it back. Verified under Docker Compose; the same seed runs
+in the chart.
+
 ### `environment.<svc>` replaces, it does not merge
 
 In the community chart, setting `environment.auth` discards the chart's defaults for that service rather than merging

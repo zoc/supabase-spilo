@@ -138,7 +138,10 @@ RUN chmod 0755 /scripts/supabase_post_init.sh /scripts/migrate.sh \
  && printf '\n%s\n%s\n' '# Supabase bootstrap (added by supabase-spilo)' \
       '/scripts/supabase_post_init.sh "$@"' >> /scripts/post_init.sh
 
-USER postgres
+# Back to the base image's user (root): Spilo's launch.sh fixes ownership of
+# the data volume and drops to postgres itself. Running as postgres here fails
+# initdb on any volume that starts root-owned, e.g. a plain Docker volume.
+USER root
 
 LABEL org.opencontainers.image.title="supabase-spilo" \
       org.opencontainers.image.description="Zalando Spilo with the Supabase extension set and bootstrap migrations" \
