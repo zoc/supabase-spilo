@@ -23,7 +23,7 @@ ARG PG_NET_VERSION=0.20.5
 # Underscored to match curl's own tag format (curl-8_22_0), which is what
 # Renovate reads; the build converts it to the dotted form for the tarball URL.
 # renovate: datasource=github-tags depName=curl/curl extractVersion=^curl-(?<version>.+)$ versioning=regex:^(?<major>\d+)_(?<minor>\d+)_(?<patch>\d+)$
-ARG CURL_VERSION=8_22_0
+ARG CURL_VERSION=8_23_0
 
 
 # --------------------------------------------------------------- pg_net build
