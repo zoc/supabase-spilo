@@ -114,7 +114,9 @@ check 'postgres still superuser' \"\$(q \"select rolsuper::text from pg_roles wh
 # failure mode that shipped silently once already.
 check 'service roles have passwords' \"\$(q \"select count(*) from pg_authid where rolpassword is null and rolname in ('supabase_admin','supabase_auth_admin','supabase_storage_admin','authenticator','pgbouncer','supabase_functions_admin')\")\" 0
 
-check 'jwt secret set on database' \"\$(q \"select count(*) from pg_db_role_setting s join pg_database d on d.oid=s.setdatabase where d.datname='postgres' and array_to_string(setconfig,',') like '%jwt_secret%'\")\" 1
+# Upstream stopped storing the JWT secret as a database setting (any role
+# could read it back with current_setting); only the expiry remains.
+check 'jwt exp set on database' \"\$(q \"select count(*) from pg_db_role_setting s join pg_database d on d.oid=s.setdatabase where d.datname='postgres' and array_to_string(setconfig,',') like '%jwt_exp%'\")\" 1
 
 # The PostgREST-critical setting; wrong here and every API request 500s.
 check 'authenticator preloads supautils' \"\$(q \"select count(*) from pg_roles where rolname='authenticator' and array_to_string(rolconfig,',') like '%supautils%'\")\" 1
